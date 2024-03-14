@@ -1,4 +1,4 @@
-module jsorb84/ssefiber
+module github.com/jsorb84/ssefiber
 
 go 1.22.0
 
