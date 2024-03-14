@@ -1,5 +1,7 @@
 # GoFiber + SSE
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/jsorb84/ssefiber.svg)](https://pkg.go.dev/github.com/jsorb84/ssefiber)
+
 My attempt at a basic wrapper to easily allow SSE with a GoFiber application
 
 ## Usage
