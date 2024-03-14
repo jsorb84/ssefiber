@@ -1,3 +1,5 @@
+// A very basic implementation of SSE for GoFiber
+
 package ssefiber
 
 import (
