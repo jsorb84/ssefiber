@@ -157,11 +157,13 @@ func (fChan *FiberSSEChannel) ServeHTTP() fiber.Handler {
 		c.Set("Content-Type", "text/event-stream")
 		c.Set("Connection", "keep-alive")
 		c.Set("Access-Control-Allow-Origin", "*")
-		// Fire OnConnect Event Handlers
-		fChan.FireOnEventHandlers(c, "connect")
-		// Setup the disconnect handlers
-		defer fChan.FireOnEventHandlers(c, "disconnect")
+		
+		
 		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+			// Fire OnConnect Event Handlers
+			fChan.FireOnEventHandlers(c, "connect")
+			// Setup the disconnect handlers
+			defer fChan.FireOnEventHandlers(c, "disconnect")
 			for {
 				event := <-fChan.Events
 				// fmt.Fprintf(w, "event: %s\ndata: %s\n\n", string(event.Event), string(event.Data))
