@@ -76,7 +76,7 @@ type IFiberSSEApp interface {
 */
 func New(app *fiber.App, base string) *FiberSSEApp {
 	// Add the base route
-	fiberRouter := app.Add("GET", base, func(c *fiber.Ctx) error {
+	fiberRouter := app.Group(base, func(c *fiber.Ctx) error {
 		return nil
 	})
 	// Create a new SSE App
@@ -110,7 +110,7 @@ func (app *FiberSSEApp) CreateChannel(name, base string) *FiberSSEChannel {
     }
 	app.Channels[name] = newChannel
 	// Add the sub-route for the channel
-	(*app.Router).Get(app.Base+newChannel.Base, newChannel.ServeHTTP())
+	(*app.Router).Get(newChannel.Base, newChannel.ServeHTTP())
 	return newChannel
 }
 // ListChannels returns a list of all the channels and prints them to the console
@@ -161,7 +161,7 @@ func (fChan *FiberSSEChannel) ServeHTTP() fiber.Handler {
 		
 		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 			// Fire OnConnect Event Handlers
-			fChan.FireOnEventHandlers(c, "connect")
+			go fChan.FireOnEventHandlers(c, "connect")
 			// Setup the disconnect handlers
 			defer fChan.FireOnEventHandlers(c, "disconnect")
 			for {
