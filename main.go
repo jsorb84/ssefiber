@@ -77,7 +77,11 @@ type IFiberSSEApp interface {
 func New(app *fiber.App, base string) *FiberSSEApp {
 	// Add the base route
 	fiberRouter := app.Group(base, func(c *fiber.Ctx) error {
-		return nil
+		c.Set("Cache-Control", "no-cache")
+		c.Set("Content-Type", "text/event-stream")
+		c.Set("Connection", "keep-alive")
+		c.Set("Access-Control-Allow-Origin", "*")
+		return c.Next()
 	})
 	// Create a new SSE App
 	newFSSEApp := &FiberSSEApp{
@@ -110,7 +114,7 @@ func (app *FiberSSEApp) CreateChannel(name, base string) *FiberSSEChannel {
     }
 	app.Channels[name] = newChannel
 	// Add the sub-route for the channel
-	(*app.Router).Get(newChannel.Base, newChannel.ServeHTTP())
+	(*app.Router).Get(newChannel.Base, newChannel.ServeHTTP)
 	return newChannel
 }
 // ListChannels returns a list of all the channels and prints them to the console
@@ -151,31 +155,22 @@ func (c *FiberSSEChannel) Print() {
 // ServeHTTP returns a fiber.Handler for the channel.
 //
 // Use `sseApp.CreateChannel` to create a new channel.
-func (fChan *FiberSSEChannel) ServeHTTP() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		c.Set("Cache-Control", "no-cache")
-		c.Set("Content-Type", "text/event-stream")
-		c.Set("Connection", "keep-alive")
-		c.Set("Access-Control-Allow-Origin", "*")
-		
-		
-		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-			// Fire OnConnect Event Handlers
-			go fChan.FireOnEventHandlers(c, "connect")
-			// Setup the disconnect handlers
-			defer fChan.FireOnEventHandlers(c, "disconnect")
-			for {
-				event := <-fChan.Events
-				// fmt.Fprintf(w, "event: %s\ndata: %s\n\n", string(event.Event), string(event.Data))
-				// w.Flush()
-				event.WriteEvent(w)
-				
-				
-			}
-		})
+func (fChan *FiberSSEChannel) ServeHTTP(c *fiber.Ctx) error {
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		// Fire OnConnect Event Handlers
+		go fChan.FireOnEventHandlers(c, "connect")
+		// Setup the disconnect handlers
+		defer fChan.FireOnEventHandlers(c, "disconnect")
+		for {
+			event := <-fChan.Events
+			// fmt.Fprintf(w, "event: %s\ndata: %s\n\n", string(event.Event), string(event.Data))
+			// w.Flush()
+			event.WriteEvent(w)
+		}
+	})
 
-		return nil
-	}
+	return nil
+	
 }
 // Fire the handlers for a given event
 func (channel *FiberSSEChannel) FireOnEventHandlers(fiberCtx *fiber.Ctx, event string) {
