@@ -1,6 +1,6 @@
 // A very basic implementation of SSE for GoFiber
 
-package ssefiber
+package main
 
 import (
 	"bufio"
@@ -19,10 +19,18 @@ type FiberSSEEvent struct {
 	Retry string `json:"retry"`
 	OnChannel *FiberSSEChannel
 }
+// # TypeDef
+//
+// Handler for channel events
 type FiberSSEEventHandler func(ctx *fiber.Ctx, sseChannel *FiberSSEChannel)
+// # TypeDef
+//
+// Handler for specific events on a channel
+type FiberSSEOnEventHandler func(ctx *fiber.Ctx, sseChannel *FiberSSEChannel, sseEvent *FiberSSEEvent)
 type FiberSSEEvents interface {
 	OnConnect(handlers ...FiberSSEEventHandler)
 	OnDisconnect(handlers ...FiberSSEEventHandler)
+	OnEvent(eventName string, handlers ...FiberSSEOnEventHandler)
 	FireOnEventHandlers(fiberCtx *fiber.Ctx, event string)
 }
 /*
@@ -34,8 +42,8 @@ type FiberSSEChannel struct {
 	Base   string
 	Events chan *FiberSSEEvent
 	ParentSSEApp *FiberSSEApp
-	OnEventHandlers map[string]([]FiberSSEEventHandler)
-	
+	Handlers map[string]([]FiberSSEEventHandler)
+	EventHandlers map[string]([]FiberSSEOnEventHandler)
 }
 type FiberSSEHandler func(c *fiber.Ctx, w *bufio.Writer) error
 /*
@@ -77,12 +85,14 @@ type IFiberSSEApp interface {
 func New(app *fiber.App, base string) *FiberSSEApp {
 	// Add the base route
 	fiberRouter := app.Group(base, func(c *fiber.Ctx) error {
+		// Set the headers for SSE
 		c.Set("Cache-Control", "no-cache")
 		c.Set("Content-Type", "text/event-stream")
 		c.Set("Connection", "keep-alive")
 		c.Set("Access-Control-Allow-Origin", "*")
 		return c.Next()
 	})
+	
 	// Create a new SSE App
 	newFSSEApp := &FiberSSEApp{
 		Base: base,
@@ -110,7 +120,8 @@ func (app *FiberSSEApp) CreateChannel(name, base string) *FiberSSEChannel {
         Base:   base,
         Events: make(chan *FiberSSEEvent),
 		ParentSSEApp: app,
-		OnEventHandlers: make(map[string]([]FiberSSEEventHandler)),
+		Handlers: make(map[string][]FiberSSEEventHandler),
+		EventHandlers: make(map[string][]FiberSSEOnEventHandler),
     }
 	app.Channels[name] = newChannel
 	// Add the sub-route for the channel
@@ -128,7 +139,7 @@ func (app *FiberSSEApp) ListChannels() map[string]*FiberSSEChannel {
 /*
 	Create an event and send it to the channel.
 */
-func (channel *FiberSSEChannel) PushEvent(event, data string) {
+func (channel *FiberSSEChannel) SendEvent(event, data string) {
 	sseEvent := &FiberSSEEvent{
 		Timestamp: time.Now(),
 		Event: event,
@@ -137,13 +148,10 @@ func (channel *FiberSSEChannel) PushEvent(event, data string) {
 	}
 	channel.Events <- sseEvent
 }
-// Write the event to the writer `w` - formats according to SSE standard
-func (e *FiberSSEEvent) WriteEvent(w *bufio.Writer) {
+// Flush the event to the writer `w` - formats according to SSE standard
+func (e *FiberSSEEvent) Flush(w *bufio.Writer) error {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Event, e.Data)
-	err := w.Flush()
-	if err!= nil {
-		panic(err)
-	}
+	return w.Flush()
 }
 // Prints the channel information to the console
 func (c *FiberSSEChannel) Print() {
@@ -156,37 +164,72 @@ func (c *FiberSSEChannel) Print() {
 //
 // Use `sseApp.CreateChannel` to create a new channel.
 func (fChan *FiberSSEChannel) ServeHTTP(c *fiber.Ctx) error {
+	
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		// Fire OnConnect Event Handlers
-		go fChan.FireOnEventHandlers(c, "connect")
-		// Setup the disconnect handlers
-		defer fChan.FireOnEventHandlers(c, "disconnect")
+		
+		go fChan.FireHandlers(c, "connect")
+		
 		for {
-			event := <-fChan.Events
+			event, more := <-fChan.Events
 			// fmt.Fprintf(w, "event: %s\ndata: %s\n\n", string(event.Event), string(event.Data))
 			// w.Flush()
-			event.WriteEvent(w)
+			go event.FireEventHandlers(c)
+			if err := event.Flush(w); err != nil {
+				go fChan.FireHandlers(c, "disconnect")
+				return
+			}
+			if !more {
+				// Fire OnDisconnect Event Handlers
+                go fChan.FireHandlers(c, "disconnect")
+                return
+			}
 		}
 	})
 
 	return nil
 	
 }
-// Fire the handlers for a given event
-func (channel *FiberSSEChannel) FireOnEventHandlers(fiberCtx *fiber.Ctx, event string) {
-	for _, handler := range channel.OnEventHandlers[event] {
+// Cleanup removes all of the channels from the app. Should be used as a defer
+func (sseApp *FiberSSEApp) Cleanup() {
+	for _, channel := range sseApp.Channels {
+        close(channel.Events)
+    }
+	fmt.Println("All Channels Closed - Cleanup Successful")
+}
+
+// Fire the handlers for a given channel event (connect, disconnect)
+func (channel *FiberSSEChannel) FireHandlers(fiberCtx *fiber.Ctx, event string) {
+	for _, handler := range channel.Handlers[event] {
         handler(fiberCtx, channel)
     }
 }
+// Fire the handlers for this event
+func (e *FiberSSEEvent) FireEventHandlers(fiberCtx *fiber.Ctx) {
+	channel := e.OnChannel
+	for _, handler := range channel.EventHandlers[e.Event] {
+        handler(fiberCtx, channel, e)
+    }
+}
+
 // Adds the handlers to the channel for the connect method
 func (channel *FiberSSEChannel) OnConnect(handlers ...FiberSSEEventHandler) {
-	channel.OnEventHandlers["connect"] = []FiberSSEEventHandler{}
-	channel.OnEventHandlers["connect"] = append(channel.OnEventHandlers["connect"], handlers...) 
+	channel.Handlers["connect"] = []FiberSSEEventHandler{}
+	channel.Handlers["connect"] = append(channel.Handlers["connect"], handlers...) 
 }
 // Adds the handlers to the channel for the disconnect method
 func (channel *FiberSSEChannel) OnDisconnect(handlers ...FiberSSEEventHandler) {
-	channel.OnEventHandlers["disconnect"] = []FiberSSEEventHandler{}
-	channel.OnEventHandlers["disconnect"] = append(channel.OnEventHandlers["disconnect"], handlers...) 
+	channel.Handlers["disconnect"] = []FiberSSEEventHandler{}
+	channel.Handlers["disconnect"] = append(channel.Handlers["disconnect"], handlers...) 
+}
+// Add handlers for the any given event
+//
+// Example:
+//
+//	channelOne.OnEvent("test", ...) // Fires anytime the event "test" is fired
+func (channel *FiberSSEChannel) OnEvent(eventName string, handlers ...FiberSSEOnEventHandler) {
+	channel.EventHandlers[eventName] = []FiberSSEOnEventHandler{}
+	channel.EventHandlers[eventName] = append(channel.EventHandlers[eventName], handlers...) 
 
 }
 // Returns a channel by name

@@ -24,7 +24,7 @@ func main() {
     // Pass some events
     go func() {
         for i:=10; i<10; i++ {
-            channelOne.PushEvent("Event Name", "Event Data")
+            channelOne.SendEvent("Event Name", "Event Data")
         }
     }()
     app.Listen(":8000")
