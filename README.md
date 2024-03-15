@@ -16,29 +16,15 @@ import (
 
 func main() {
     app := fiber.New(...)
-    // Channel for Events
-    eventsChan := make(chan *ssefiber.FiberSSEEvent)
-    defer close(eventsChan)
+    sse := ssefiber.New(app, "/sse")
+
     // Create a channel `One`
-    channelOne := &ssefiber.FiberSSEChannel{
-        Name: "Channel One",
-        Base: "/one",
-        Events: eventsChan, // Events Channel
-    }
-
-    // Call New to add the base routes
-    ssefiber.New(app, "/sse", channelOne, ...) // Pass in channels
-
-    // SSE at /sse/one
+    channelOne := sse.CreateChannel("Channel One", "/one")
 
     // Pass some events
     go func() {
         for i:=10; i<10; i++ {
-            newEvent := &ssefiber.FiberSSEEvent{
-                Event: "name",
-                Data: "data",
-            }
-            eventsChan <- newEvent
+            channelOne.PushEvent("Event Name", "Event Data")
         }
     }()
     app.Listen(":8000")

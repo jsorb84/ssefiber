@@ -9,21 +9,130 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// SSEEvent is a struct that represents an SSE event
 type FiberSSEEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 	ID string `json:"id"`
 	Event string `json:"event"`
 	Data string `json:"data"`
 	Retry string `json:"retry"`
+	OnChannel *FiberSSEChannel
 }
+type FiberSSEEventHandler func(ctx *fiber.Ctx, sseChannel *FiberSSEChannel)
+type FiberSSEEvents interface {
+	OnConnect(handlers ...FiberSSEEventHandler)
+	OnDisconnect(handlers ...FiberSSEEventHandler)
+	FireOnEventHandlers(fiberCtx *fiber.Ctx, event string)
+}
+/*
+	A channel with a name, and a sub-base-path
+*/
 type FiberSSEChannel struct {
+	FiberSSEEvents
 	Name   string
 	Base   string
 	Events chan *FiberSSEEvent
+	ParentSSEApp *FiberSSEApp
+	OnEventHandlers map[string]([]FiberSSEEventHandler)
 	
 }
+type FiberSSEHandler func(c *fiber.Ctx, w *bufio.Writer) error
+/*
+	The SSE Information Structure includes a list of channels and the fiber application
+*/
+type FiberSSEApp struct {
+	IFiberSSEApp
+	Base string
+	Router *fiber.Router
+	Channels map[string]*FiberSSEChannel
+	FiberApp *fiber.App
 
+}
+// FiberSSEApp Interface
+type IFiberSSEApp interface {
+	ServeHTTP(ctx *fiber.Ctx) error
+	CreateChannel(name, base string) *FiberSSEChannel
+	ListChannels() map[string]*FiberSSEChannel
+	GetChannel(name string) *FiberSSEChannel
+}
 
+/* 
+	New initializes a base SSE route group at `base`.
+
+	The base route is the base path for all channels.
+
+	The channels parameter is a list of channels that will be created.
+	Each channel has a name, a base route, and a channel for sending events.
+
+		// Create a new SSE app
+		app := fiber.New()
+		// Create a new SSE app on the fiber app
+		sseApp := ssefiber.New(app, "/sse")
+		// Add a channel to the SSE app
+		testChan := sseApp.CreateChannel("test", "/test") // Channel at /sse/test
+		// Events Channel
+		eventsChan := testChan.Events
+*/
+func New(app *fiber.App, base string) *FiberSSEApp {
+	// Add the base route
+	fiberRouter := app.Add("GET", base, func(c *fiber.Ctx) error {
+		return nil
+	})
+	// Create a new SSE App
+	newFSSEApp := &FiberSSEApp{
+		Base: base,
+		Router: &fiberRouter,
+		FiberApp: app,
+		Channels: make(map[string]*FiberSSEChannel),
+	}
+	return newFSSEApp
+}
+
+/*
+	CreateChannel creates a new channel with the given name and base path.
+	Functions as a shortcut for making a new chan each time
+
+	Example:
+		app := fiber.New()
+		sseApp := ssefiber.New(app, "/sse")
+		chanOne := sseApp.CreateChannel("Channel One", "/one")
+		chanTwo := sseApp.CreateChannel("Channel Two", "/two")
+		
+*/
+func (app *FiberSSEApp) CreateChannel(name, base string) *FiberSSEChannel {
+	newChannel := &FiberSSEChannel{
+        Name:   name,
+        Base:   base,
+        Events: make(chan *FiberSSEEvent),
+		ParentSSEApp: app,
+		OnEventHandlers: make(map[string]([]FiberSSEEventHandler)),
+    }
+	app.Channels[name] = newChannel
+	// Add the sub-route for the channel
+	(*app.Router).Get(app.Base+newChannel.Base, newChannel.ServeHTTP())
+	return newChannel
+}
+// ListChannels returns a list of all the channels and prints them to the console
+func (app *FiberSSEApp) ListChannels() map[string]*FiberSSEChannel {
+	fmt.Println("Listing Channels...")
+	for _, channel := range app.Channels {
+		channel.Print()
+	}
+	return app.Channels
+}
+/*
+	Create an event and send it to the channel.
+*/
+func (channel *FiberSSEChannel) PushEvent(event, data string) {
+	sseEvent := &FiberSSEEvent{
+		Timestamp: time.Now(),
+		Event: event,
+        Data: data,
+		OnChannel: channel,
+	}
+	channel.Events <- sseEvent
+}
 // Write the event to the writer `w` - formats according to SSE standard
 func (e *FiberSSEEvent) WriteEvent(w *bufio.Writer) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Event, e.Data)
@@ -34,57 +143,57 @@ func (e *FiberSSEEvent) WriteEvent(w *bufio.Writer) {
 }
 // Prints the channel information to the console
 func (c *FiberSSEChannel) Print() {
-	fmt.Printf("==CHANNEL CREATED==\nName: %s\nRoute: %s\n===================", c.Name, c.Base)
+	fmt.Printf("==CHANNEL CREATED==\nName: %s\nRoute Endpoint: %s\n===================", c.Name, c.ParentSSEApp.Base+c.Base)
 }
 
-type FiberSSEHandler func(c *fiber.Ctx, w *bufio.Writer) error
-
-// New initializes a base SSE route group at `base`.
+// # Internal Method
 //
-// The base route is the base path for all channels.
+// ServeHTTP returns a fiber.Handler for the channel.
 //
-// The channels parameter is a list of channels that will be created.
-// Each channel has a name, a base route, and a channel for sending events.
-// 
-// ### Example:
-//
-//  ```go 
-//  app := fiber.New()
-//  eventChan := make(chan *ssefiber.FiberSSEEvent)
-//  
-//  chanOne := &ssefiber.FiberSSEChannel{
-//  	Name: "Channel One",
-//  	Base: "/one",
-//  	Events: eventChan,
-//  } // Create the channel at /sse/one
-//  defer close(eventChan)
-//  ssefiber.New(app, "/sse", chanOne)
-//  ```
-func New(app *fiber.App, base string, channels ...*FiberSSEChannel) {
-	app.Add("GET", base, func(c *fiber.Ctx) error {
-		return nil
-	})
-	for _, channel := range channels {
-		channel.Print()
-		app.Add("GET", base+channel.Base, channel.CreateRoute())
-	}
-}
-// CreateRoute returns a fiber.Handler for the channel.
-func (fChan *FiberSSEChannel) CreateRoute() fiber.Handler {
+// Use `sseApp.CreateChannel` to create a new channel.
+func (fChan *FiberSSEChannel) ServeHTTP() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		c.Set("Cache-Control", "no-cache")
 		c.Set("Content-Type", "text/event-stream")
 		c.Set("Connection", "keep-alive")
 		c.Set("Access-Control-Allow-Origin", "*")
+		// Fire OnConnect Event Handlers
+		fChan.FireOnEventHandlers(c, "connect")
+		// Setup the disconnect handlers
+		defer fChan.FireOnEventHandlers(c, "disconnect")
 		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 			for {
 				event := <-fChan.Events
 				// fmt.Fprintf(w, "event: %s\ndata: %s\n\n", string(event.Event), string(event.Data))
 				// w.Flush()
 				event.WriteEvent(w)
+				
+				
 			}
 		})
 
 		return nil
 	}
+}
+// Fire the handlers for a given event
+func (channel *FiberSSEChannel) FireOnEventHandlers(fiberCtx *fiber.Ctx, event string) {
+	for _, handler := range channel.OnEventHandlers[event] {
+        handler(fiberCtx, channel)
+    }
+}
+// Adds the handlers to the channel for the connect method
+func (channel *FiberSSEChannel) OnConnect(handlers ...FiberSSEEventHandler) {
+	channel.OnEventHandlers["connect"] = []FiberSSEEventHandler{}
+	channel.OnEventHandlers["connect"] = append(channel.OnEventHandlers["connect"], handlers...) 
+}
+// Adds the handlers to the channel for the disconnect method
+func (channel *FiberSSEChannel) OnDisconnect(handlers ...FiberSSEEventHandler) {
+	channel.OnEventHandlers["disconnect"] = []FiberSSEEventHandler{}
+	channel.OnEventHandlers["disconnect"] = append(channel.OnEventHandlers["disconnect"], handlers...) 
+
+}
+// Returns a channel by name
+func (app *FiberSSEApp) GetChannel(name string) *FiberSSEChannel {
+	findChan := app.Channels[name]
+	return findChan
 }
