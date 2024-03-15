@@ -1,6 +1,6 @@
 // A very basic implementation of SSE for GoFiber
 
-package main
+package ssefiber
 
 import (
 	"bufio"
